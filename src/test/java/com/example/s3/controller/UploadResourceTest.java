@@ -1,6 +1,7 @@
 package com.example.s3.controller;
 
 import com.example.s3.model.UploadResult;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -39,6 +40,7 @@ class UploadResourceTest {
         assertEquals(result.getStatus(), HttpStatus.CREATED, "Expected CREATED (202)");
     }
 
+    @RepeatedTest(10)
     @Test
     void upload_multiple_files_success() throws Exception {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();

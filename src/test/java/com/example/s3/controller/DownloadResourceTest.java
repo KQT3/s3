@@ -24,27 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 class DownloadResourceTest {
-    //
-//    @Autowired
-//    private TestRestTemplate restTemplate;
     @Autowired
     DownloadResource downloadResource;
 
-    @LocalServerPort
-    private int serverPort;
-
     @Test
     void download_single_file_success() throws IOException {
-        String fileId = "2cb5e5c7-9201-4f9f-ab52-9da6b96e724b";
-        String url = "http://localhost:" + serverPort + "/download/" + fileId;
-
-//        ResponseEntity<UploadResult> result = restTemplate.getForEntity(url, UploadResult.class);
+        String fileId = "a8a64d09-a723-49fb-851a-eca557aa77e0";
 
         var responseEntityMono = downloadResource.downloadFile(fileId).block();
 
-
-//        assertEquals(HttpStatus.CREATED, result.getStatusCode(), "Http Code");
-//        assertEquals(2, result.getBody().getKeys().length, "File keys");
+        assertEquals(200, responseEntityMono.getStatusCode().value());
     }
 
 }
