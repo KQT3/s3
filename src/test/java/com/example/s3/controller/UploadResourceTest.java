@@ -30,8 +30,9 @@ class UploadResourceTest {
 
     @Test
     void upload_single_file_success() throws IOException {
-        String url = "http://localhost:" + serverPort + "/inbox";
-        byte[] data = Files.readAllBytes(Paths.get("src/test/resources/testimage1.png"));
+        String url = "http://localhost:" + serverPort + "/upload";
+//        byte[] data = Files.readAllBytes(Paths.get("src/test/resources/testimage1.png"));
+        byte[] data = Files.readAllBytes(Paths.get("src/test/resources/song.wav"));
 
         UploadResult result = restTemplate.postForObject(url, data , UploadResult.class);
 
@@ -45,7 +46,7 @@ class UploadResourceTest {
         addFileEntity("f2", body, new File("src/test/resources/testimage2.png"));
 
         HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body);
-        String url = "http://localhost:" + serverPort + "/inbox";
+        String url = "http://localhost:" + serverPort + "/upload";
 
         ResponseEntity<UploadResult> result = restTemplate.postForEntity(url, requestEntity, UploadResult.class);
 

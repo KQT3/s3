@@ -3,9 +3,9 @@ package com.example.s3.controller;
 import com.example.s3.S3ClientConfigurarionProperties;
 import com.example.s3.exceptions.UploadFailedException;
 import com.example.s3.model.UploadResult;
+import com.example.s3.service.UploadService;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -15,27 +15,27 @@ import org.springframework.http.codec.multipart.Part;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import software.amazon.awssdk.core.SdkResponse;
 import software.amazon.awssdk.core.async.AsyncRequestBody;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
-import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @RestController
-@RequestMapping("/inbox")
+@RequestMapping("/upload")
 @Slf4j
+@AllArgsConstructor
 public class UploadResource {
     private final S3AsyncClient s3client;
     private final S3ClientConfigurarionProperties s3config;
-
-    public UploadResource(S3AsyncClient s3client, S3ClientConfigurarionProperties s3config) {
-        this.s3client = s3client;
-        this.s3config = s3config;
-    }
+    private final UploadService uploadService;
 
     @PostMapping
     public Mono<ResponseEntity<UploadResult>> uploadHandler(@RequestHeader HttpHeaders headers, @RequestBody Flux<ByteBuffer> body) {
@@ -65,7 +65,7 @@ public class UploadResource {
 
         return Mono.fromFuture(future)
                 .map(response -> {
-                    checkResult(response);
+                    uploadService.checkResult(response);
                     return ResponseEntity
                             .status(HttpStatus.CREATED)
                             .body(new UploadResult(HttpStatus.CREATED, new String[]{fileKey}));
@@ -75,147 +75,10 @@ public class UploadResource {
     @RequestMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE, method = {RequestMethod.POST, RequestMethod.PUT})
     public Mono<ResponseEntity<UploadResult>> multipartUploadHandler(@RequestHeader HttpHeaders headers, @RequestBody Flux<Part> parts) {
         return parts
-                .ofType(FilePart.class) // We'll ignore other data for now
-                .flatMap((part) -> saveFile(headers, s3config.getBucket(), part))
+                .ofType(FilePart.class)
+                .flatMap(part -> uploadService.saveFile(headers, s3config.getBucket(), part))
                 .collect(Collectors.toList())
-                .map((keys) -> ResponseEntity.status(HttpStatus.CREATED)
-                        .body(new UploadResult(HttpStatus.CREATED, keys)));
-    }
-
-    protected Mono<String> saveFile(HttpHeaders headers, String bucket, FilePart part) {
-        String filekey = UUID.randomUUID().toString();
-        log.info("[I137] saveFile: filekey={}, filename={}", filekey, part.filename());
-        Map<String, String> metadata = new HashMap<String, String>();
-        String filename = part.filename();
-
-        metadata.put("filename", filename);
-
-        MediaType mt = part.headers().getContentType();
-        if (mt == null) {
-            mt = MediaType.APPLICATION_OCTET_STREAM;
-        }
-
-        CompletableFuture<CreateMultipartUploadResponse> uploadRequest = s3client
-                .createMultipartUpload(CreateMultipartUploadRequest.builder()
-                        .contentType(mt.toString())
-                        .key(filekey)
-                        .metadata(metadata)
-                        .bucket(bucket)
-                        .build());
-
-        final UploadState uploadState = new UploadState(bucket, filekey);
-
-        return Mono
-                .fromFuture(uploadRequest)
-                .flatMapMany((response) -> {
-                    checkResult(response);
-                    uploadState.uploadId = response.uploadId();
-                    log.info("[I183] uploadId={}", response.uploadId());
-                    return part.content();
-                })
-                .bufferUntil((buffer) -> {
-                    uploadState.buffered += buffer.readableByteCount();
-                    if (uploadState.buffered >= s3config.getMultipartMinPartSize()) {
-                        log.info("[I173] bufferUntil: returning true, bufferedBytes={}, partCounter={}, uploadId={}", uploadState.buffered, uploadState.partCounter, uploadState.uploadId);
-                        uploadState.buffered = 0;
-                        return true;
-                    } else {
-                        return false;
-                    }
-                })
-                .map(UploadResource::concatBuffers)
-                .flatMap(buffer -> uploadPart(uploadState, buffer))
-                .onBackpressureBuffer()
-                .reduce(uploadState, (state, completedPart) -> {
-                    log.info("[I188] completed: partNumber={}, etag={}", completedPart.partNumber(), completedPart.eTag());
-                    state.completedParts.put(completedPart.partNumber(), completedPart);
-                    return state;
-                })
-                .flatMap(this::completeUpload)
-                .map(response -> {
-                    checkResult(response);
-                    return uploadState.filekey;
-                });
-    }
-
-    private static ByteBuffer concatBuffers(List<DataBuffer> buffers) {
-        log.info("[I198] creating BytBuffer from {} chunks", buffers.size());
-
-        int partSize = 0;
-        for (DataBuffer b : buffers) {
-            partSize += b.readableByteCount();
-        }
-
-        ByteBuffer partData = ByteBuffer.allocate(partSize);
-        buffers.forEach((buffer) -> {
-            partData.put(buffer.asByteBuffer());
-        });
-
-        partData.rewind();
-
-        log.info("[I208] partData: size={}", partData.capacity());
-        return partData;
-
-    }
-
-    private Mono<CompletedPart> uploadPart(UploadState uploadState, ByteBuffer buffer) {
-        final int partNumber = ++uploadState.partCounter;
-        log.info("[I218] uploadPart: partNumber={}, contentLength={}", partNumber, buffer.capacity());
-
-        CompletableFuture<UploadPartResponse> request = s3client.uploadPart(UploadPartRequest.builder()
-                        .bucket(uploadState.bucket)
-                        .key(uploadState.filekey)
-                        .partNumber(partNumber)
-                        .uploadId(uploadState.uploadId)
-                        .contentLength((long) buffer.capacity())
-                        .build(),
-                AsyncRequestBody.fromPublisher(Mono.just(buffer)));
-
-        return Mono
-                .fromFuture(request)
-                .map((uploadPartResult) -> {
-                    checkResult(uploadPartResult);
-                    log.info("[I230] uploadPart complete: part={}, etag={}", partNumber, uploadPartResult.eTag());
-                    return CompletedPart.builder()
-                            .eTag(uploadPartResult.eTag())
-                            .partNumber(partNumber)
-                            .build();
-                });
-    }
-
-    private Mono<CompleteMultipartUploadResponse> completeUpload(UploadState state) {
-        log.info("[I202] completeUpload: bucket={}, filekey={}, completedParts.size={}", state.bucket, state.filekey, state.completedParts.size());
-
-        CompletedMultipartUpload multipartUpload = CompletedMultipartUpload.builder()
-                .parts(state.completedParts.values())
-                .build();
-
-        return Mono.fromFuture(s3client.completeMultipartUpload(CompleteMultipartUploadRequest.builder()
-                .bucket(state.bucket)
-                .uploadId(state.uploadId)
-                .multipartUpload(multipartUpload)
-                .key(state.filekey)
-                .build()));
-    }
-
-    private static void checkResult(SdkResponse result) {
-        if (result.sdkHttpResponse() == null || !result.sdkHttpResponse().isSuccessful()) {
-            throw new UploadFailedException(result);
-        }
-    }
-
-    static class UploadState {
-        final String bucket;
-        final String filekey;
-
-        String uploadId;
-        int partCounter;
-        Map<Integer, CompletedPart> completedParts = new HashMap<>();
-        int buffered = 0;
-
-        UploadState(String bucket, String filekey) {
-            this.bucket = bucket;
-            this.filekey = filekey;
-        }
+                .map(keys -> ResponseEntity.status(HttpStatus.CREATED)
+                        .body(new UploadResult(HttpStatus.CREATED, keys.toArray(String[]::new))));
     }
 }

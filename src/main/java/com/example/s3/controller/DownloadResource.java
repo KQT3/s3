@@ -2,6 +2,7 @@ package com.example.s3.controller;
 
 import com.example.s3.S3ClientConfigurarionProperties;
 import com.example.s3.exceptions.DownloadFailedException;
+import com.example.s3.service.DownloadService;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -24,14 +25,13 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 @RestController
-@RequestMapping("/inbox")
+@RequestMapping("/download")
 @Slf4j
 @AllArgsConstructor
 public class DownloadResource {
-
     private final S3AsyncClient s3client;
     private final S3ClientConfigurarionProperties s3config;
-
+    private final DownloadService downloadService;
 
     @GetMapping(path = "/{filekey}")
     Mono<ResponseEntity<Flux<ByteBuffer>>> downloadFile(@PathVariable("filekey") String filekey) {
@@ -42,8 +42,8 @@ public class DownloadResource {
 
         return Mono.fromFuture(s3client.getObject(request, new FluxResponseProvider()))
                 .map(response -> {
-                    checkResult(response.sdkResponse);
-                    String filename = getMetadataItem(response.sdkResponse, "filename", filekey);
+                    downloadService.checkResult(response.sdkResponse);
+                    String filename = downloadService.getMetadataItem(response.sdkResponse, "filename", filekey);
                     return ResponseEntity.ok()
                             .header(HttpHeaders.CONTENT_TYPE, response.sdkResponse.contentType())
                             .header(HttpHeaders.CONTENT_LENGTH, Long.toString(response.sdkResponse.contentLength()))
@@ -52,25 +52,7 @@ public class DownloadResource {
                 });
     }
 
-    private String getMetadataItem(GetObjectResponse sdkResponse, String key, String defaultValue) {
-        for (Map.Entry<String, String> entry : sdkResponse.metadata().entrySet()) {
-            if (entry.getKey().equalsIgnoreCase(key)) {
-                return entry.getValue();
-            }
-        }
-        return defaultValue;
-    }
-
-    private static void checkResult(GetObjectResponse response) {
-        SdkHttpResponse sdkResponse = response.sdkHttpResponse();
-        if (sdkResponse != null && sdkResponse.isSuccessful()) {
-            return;
-        }
-
-        throw new DownloadFailedException(response);
-    }
-
-    static class FluxResponseProvider implements AsyncResponseTransformer<GetObjectResponse, FluxResponse> {
+    static class FluxResponseProvider implements AsyncResponseTransformer<GetObjectResponse, FluxResponseProvider.FluxResponse> {
         private FluxResponse response;
 
         @Override
@@ -95,11 +77,11 @@ public class DownloadResource {
             response.cf.completeExceptionally(error);
         }
 
-    }
+        private static class FluxResponse {
+            final CompletableFuture<FluxResponse> cf = new CompletableFuture<>();
+            GetObjectResponse sdkResponse;
+            Flux<ByteBuffer> flux;
+        }
 
-    static class FluxResponse {
-        final CompletableFuture<FluxResponse> cf = new CompletableFuture<>();
-        GetObjectResponse sdkResponse;
-        Flux<ByteBuffer> flux;
     }
 }
